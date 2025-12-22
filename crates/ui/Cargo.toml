@@ -7,3 +7,5 @@ publish = false
 [dependencies]
 player_core.workspace = true
 gpui.workspace = true
+gpuikit = { path = "../../../gpuikit/crates/gpuikit" }
+gpuikit-theme = { path = "../../../gpuikit/crates/gpuikit-theme" }

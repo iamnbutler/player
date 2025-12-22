@@ -7,4 +7,6 @@ resolver = "2"
 player_core = { path = "crates/player_core" }
 ui = { path = "crates/ui" }
 
-gpui = { git = "https://github.com/gpui-ce/gpui-ce" }
+gpui = "0.2.2"
+gpuikit = { path = "../gpuikit/crates/gpuikit" }
+gpuikit-theme = { path = "../gpuikit/crates/gpuikit-theme" }

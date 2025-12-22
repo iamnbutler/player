@@ -12,3 +12,5 @@ path = "src/main.rs"
 player_core.workspace = true
 ui.workspace = true
 gpui.workspace = true
+gpuikit = { path = "../../../gpuikit/crates/gpuikit" }
+gpuikit-theme = { path = "../../../gpuikit/crates/gpuikit-theme" }

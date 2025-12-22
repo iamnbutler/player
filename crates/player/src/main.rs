@@ -1,9 +1,16 @@
 use gpui::prelude::*;
 use gpui::*;
+use gpuikit::elements::button::button;
+use gpuikit::elements::icon_button::icon_button;
+use gpuikit::elements::separator::separator;
+use gpuikit::layout::{h_stack, v_stack};
+use gpuikit::DefaultIcons;
+use gpuikit_theme::{ActiveTheme, Themeable};
 use player_core::{
     ensure_directories, import_all_pending, import_path, save_library, AudioPlayer,
     AudioPlayerEvent, Library, LibraryReader, LoadedEntry, PlaybackState, Song,
 };
+use std::time::Duration;
 use ui::{ListView, ListViewEvent};
 
 struct Player {
@@ -213,119 +220,151 @@ impl Player {
     }
 }
 
+fn progress_bar(position: Duration, duration: Duration, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    let progress = if duration.as_secs_f32() > 0.0 {
+        (position.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    div()
+        .h(rems(0.25))
+        .w_full()
+        .bg(theme.surface_secondary())
+        .rounded(rems(0.125))
+        .child(
+            div()
+                .h_full()
+                .w(relative(progress))
+                .bg(theme.accent())
+                .rounded(rems(0.125)),
+        )
+}
+
 impl Render for Player {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
         let song_count = self.library.read(cx).songs.len();
         let audio_player = self.audio_player.read(cx);
         let playback_state = audio_player.state();
         let current_song = audio_player.current_song().cloned();
         let position = audio_player.position();
 
-        div()
-            .flex()
-            .flex_col()
-            .bg(rgb(0x1a1a1a))
+        let duration = current_song
+            .as_ref()
+            .map(|s| s.duration)
+            .unwrap_or(Duration::ZERO);
+
+        v_stack()
+            .bg(theme.bg())
             .size_full()
             .child(
-                div()
-                    .flex()
+                h_stack()
                     .items_center()
                     .justify_between()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(0x333333))
+                    .px(rems(0.75))
+                    .py(rems(0.5))
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(0x888888))
+                            .text_color(theme.fg_muted())
                             .child(format!("{} songs", song_count)),
                     )
                     .child(
-                        div()
-                            .id("scan-button")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .bg(rgb(0x333333))
-                            .hover(|style| style.bg(rgb(0x444444)))
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(rgb(0xffffff))
-                            .child("Scan for imports")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
+                        button("scan-button", "Scan for imports").on_click(cx.listener(
+                            |this, _event, _window, cx| {
                                 this.scan_for_imports(cx);
-                            })),
+                            },
+                        )),
                     ),
             )
-            .child(div().flex_1().child(self.list_view.clone()))
+            .child(separator())
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(rgb(0x333333))
-                    .bg(rgb(0x222222))
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(self.list_view.clone()),
+            )
+            .child(separator())
+            .child(
+                v_stack()
+                    .gap(rems(0.5))
+                    .px(rems(0.75))
+                    .py(rems(0.5))
+                    .bg(theme.surface())
                     .child(
-                        div()
-                            .id("play-pause-button")
-                            .w_10()
-                            .h_10()
-                            .flex()
+                        h_stack()
                             .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .bg(rgb(0x4ade80))
-                            .hover(|style| style.bg(rgb(0x5aee90)))
-                            .cursor_pointer()
-                            .text_color(rgb(0x000000))
-                            .text_lg()
-                            .child(match playback_state {
-                                PlaybackState::Playing => "⏸",
-                                PlaybackState::Paused | PlaybackState::Stopped => "▶",
-                            })
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.toggle_playback(cx);
+                            .gap(rems(0.5))
+                            .child(
+                                icon_button(
+                                    "play-pause",
+                                    match playback_state {
+                                        PlaybackState::Playing => DefaultIcons::pause(),
+                                        PlaybackState::Paused | PlaybackState::Stopped => {
+                                            DefaultIcons::play()
+                                        }
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    |this, _event, _window, cx| {
+                                        this.toggle_playback(cx);
+                                    },
+                                )),
+                            )
+                            .child(v_stack().flex_1().gap(rems(0.125)).map(|this| {
+                                if let Some(song) = &current_song {
+                                    this.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(theme.fg())
+                                            .child(song.title.clone()),
+                                    )
+                                    .child(
+                                        div().text_xs().text_color(theme.fg_muted()).child(
+                                            song.artist
+                                                .clone()
+                                                .unwrap_or_else(|| "Unknown Artist".to_string()),
+                                        ),
+                                    )
+                                } else {
+                                    this.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(theme.fg_disabled())
+                                            .child("No track playing"),
+                                    )
+                                }
                             })),
                     )
-                    .child(div().flex_1().flex().flex_col().gap_1().map(|this| {
-                        if let Some(song) = &current_song {
-                            this.child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(0xffffff))
-                                    .child(song.title.clone()),
-                            )
-                            .child(
-                                div().text_xs().text_color(rgb(0x888888)).child(
-                                    song.artist
-                                        .clone()
-                                        .unwrap_or_else(|| "Unknown Artist".to_string()),
-                                ),
-                            )
-                        } else {
-                            this.child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(0x666666))
-                                    .child("No track playing"),
-                            )
-                        }
-                    }))
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x888888))
-                            .child(format_duration(position)),
+                        h_stack()
+                            .items_center()
+                            .gap(rems(0.5))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.fg_muted())
+                                    .w(rems(2.5))
+                                    .child(format_duration(position)),
+                            )
+                            .child(div().flex_1().child(progress_bar(position, duration, cx)))
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .text_xs()
+                                    .text_color(theme.fg_muted())
+                                    .w(rems(2.5))
+                                    .child(format_duration(duration)),
+                            ),
                     ),
             )
     }
 }
 
-fn format_duration(duration: std::time::Duration) -> String {
+fn format_duration(duration: Duration) -> String {
     let total_seconds = duration.as_secs();
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
@@ -333,8 +372,13 @@ fn format_duration(duration: std::time::Duration) -> String {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
-        cx.open_window(WindowOptions::default(), |_window, cx| cx.new(Player::new))
-            .unwrap();
-    });
+    Application::new()
+        .with_assets(gpuikit::assets())
+        .run(|cx: &mut App| {
+            gpuikit::init(cx);
+            cx.open_window(WindowOptions::default(), |_window, cx| cx.new(Player::new))
+                .unwrap();
+
+            cx.activate(true);
+        });
 }

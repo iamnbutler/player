@@ -1,9 +1,11 @@
 use std::ops::Range;
 
 use gpui::{
-    div, prelude::*, rgb, uniform_list, Context, Entity, EventEmitter, IntoElement, Render,
+    div, prelude::*, rems, uniform_list, Context, Entity, EventEmitter, IntoElement, Render,
     SharedString, UniformListScrollHandle, Window,
 };
+use gpuikit::layout::h_stack;
+use gpuikit_theme::{ActiveTheme, Themeable};
 use player_core::{Library, Song, SongId, SortOrder};
 
 pub struct ListView {
@@ -57,6 +59,7 @@ impl Render for ListView {
                 "track-list",
                 song_count,
                 cx.processor(move |_this, range: Range<usize>, _window, cx| {
+                    let theme = cx.theme();
                     let mut items = Vec::new();
 
                     for ix in range {
@@ -72,45 +75,44 @@ impl Render for ListView {
                             let is_selected = selected_index == Some(ix);
 
                             let bg_color = if is_playing {
-                                rgb(0x2d4a3e)
+                                theme.accent_bg()
                             } else if is_selected {
-                                rgb(0x333333)
+                                theme.selection()
                             } else {
-                                rgb(0x1a1a1a)
+                                theme.bg()
                             };
 
                             let hover_bg = if is_playing {
-                                rgb(0x3d5a4e)
+                                theme.accent_bg_hover()
                             } else {
-                                rgb(0x2a2a2a)
+                                theme.surface()
                             };
 
                             let title_color = if is_playing {
-                                rgb(0x4ade80)
+                                theme.accent()
                             } else {
-                                rgb(0xffffff)
+                                theme.fg()
                             };
 
                             let song_for_click = song.clone();
 
                             items.push(
-                                div()
+                                h_stack()
                                     .id(ix)
-                                    .h_7()
+                                    .h(rems(1.75))
                                     .items_center()
-                                    .flex()
                                     .w_full()
-                                    .px_2()
+                                    .px(rems(0.5))
                                     .bg(bg_color)
                                     .hover(move |style| style.bg(hover_bg))
                                     .cursor_pointer()
                                     .child(
                                         div()
-                                            .w_6()
+                                            .w(rems(2.0))
                                             .text_xs()
-                                            .text_color(rgb(0x888888))
+                                            .text_color(theme.fg_muted())
                                             .when(is_playing, |el| {
-                                                el.text_color(rgb(0x4ade80)).child("▶")
+                                                el.text_color(theme.accent()).child("▶")
                                             })
                                             .when(!is_playing, |el| {
                                                 el.child(format!("{}", ix + 1))
@@ -128,15 +130,15 @@ impl Render for ListView {
                                         div()
                                             .flex_1()
                                             .text_xs()
-                                            .text_color(rgb(0x888888))
+                                            .text_color(theme.fg_muted())
                                             .overflow_hidden()
                                             .child(artist),
                                     )
                                     .child(
                                         div()
-                                            .w_12()
+                                            .w(rems(3.0))
                                             .text_xs()
-                                            .text_color(rgb(0x666666))
+                                            .text_color(theme.fg_disabled())
                                             .child(format_duration(song.duration)),
                                     )
                                     .on_click(cx.listener(
@@ -162,7 +164,7 @@ impl Render for ListView {
                     items
                 }),
             )
-            .track_scroll(&self.scroll_handle)
+            .track_scroll(self.scroll_handle.clone())
             .size_full(),
         )
     }
