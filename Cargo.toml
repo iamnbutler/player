@@ -1,13 +1,10 @@
 [workspace]
-members = ["crates/player"]
+members = ["crates/player", "crates/player_core", "crates/ui"]
 default-members = ["crates/player"]
 resolver = "2"
 
 [workspace.dependencies]
-player = { path = "crates/player" }
+player_core = { path = "crates/player_core" }
+ui = { path = "crates/ui" }
 
-gpui = { git = "https://github.com/zed-industries/zed" }
-# smallvec is included here for convenience, it is used by gpui when creating
-# components that can have children. uncomment this line or
-# use `cargo add smallvec` to add it to your project
-#smallvec = "1.13.2"
+gpui = { git = "https://github.com/gpui-ce/gpui-ce" }

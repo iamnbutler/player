@@ -1,8 +1,8 @@
 mod fixtures;
 
 use fixtures::mp3_fixture;
-use player::import::{import_file, ImportError};
-use player::AudioFormat;
+use player_core::import::{import_file, ImportError};
+use player_core::AudioFormat;
 
 #[test]
 fn import_mp3_reads_metadata() {
