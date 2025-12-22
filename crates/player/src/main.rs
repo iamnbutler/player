@@ -316,7 +316,12 @@ impl Player {
     }
 }
 
-fn progress_bar(position: Duration, duration: Duration, cx: &App) -> impl IntoElement {
+fn progress_bar(
+    position: Duration,
+    duration: Duration,
+    is_playing: bool,
+    cx: &App,
+) -> impl IntoElement {
     let theme = cx.theme();
     let progress = if duration.as_secs_f32() > 0.0 {
         (position.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
@@ -324,18 +329,49 @@ fn progress_bar(position: Duration, duration: Duration, cx: &App) -> impl IntoEl
         0.0
     };
 
-    div()
-        .h(rems(0.25))
-        .w_full()
-        .bg(theme.surface_secondary())
-        .rounded(rems(0.125))
-        .child(
-            div()
-                .h_full()
-                .w(relative(progress))
-                .bg(theme.accent())
-                .rounded(rems(0.125)),
-        )
+    let bg_color = theme.surface_secondary();
+    let fg_color = theme.accent();
+
+    canvas(
+        move |bounds, _, _| bounds,
+        move |bounds, _, window, _cx| {
+            if is_playing {
+                window.request_animation_frame();
+            }
+
+            let corner_radius = px(2.0);
+            let progress_width = bounds.size.width * progress;
+
+            window.paint_quad(gpui::PaintQuad {
+                bounds,
+                corner_radii: gpui::Corners::all(corner_radius),
+                background: bg_color.into(),
+                border_widths: gpui::Edges::default(),
+                border_color: gpui::transparent_black(),
+                border_style: gpui::BorderStyle::default(),
+            });
+
+            if progress > 0.0 {
+                let progress_bounds = Bounds {
+                    origin: bounds.origin,
+                    size: gpui::Size {
+                        width: progress_width,
+                        height: bounds.size.height,
+                    },
+                };
+                window.paint_quad(gpui::PaintQuad {
+                    bounds: progress_bounds,
+                    corner_radii: gpui::Corners::all(corner_radius),
+                    background: fg_color.into(),
+                    border_widths: gpui::Edges::default(),
+                    border_color: gpui::transparent_black(),
+                    border_style: gpui::BorderStyle::default(),
+                });
+            }
+        },
+    )
+    .h(px(4.0))
+    .w_full()
 }
 
 impl Render for Player {
@@ -343,6 +379,7 @@ impl Render for Player {
         let theme = cx.theme();
         let audio_player = self.audio_player.read(cx);
         let playback_state = audio_player.state();
+        let is_playing = playback_state == PlaybackState::Playing;
         let current_song = audio_player.current_song().cloned();
         let position = audio_player.position();
 
@@ -424,7 +461,11 @@ impl Render for Player {
                                     .w(rems(2.5))
                                     .child(format_duration(position)),
                             )
-                            .child(div().flex_1().child(progress_bar(position, duration, cx)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(progress_bar(position, duration, is_playing, cx)),
+                            )
                             .child(
                                 div()
                                     .flex()
