@@ -36,12 +36,18 @@ pub fn imported_path() -> PathBuf {
     player_root().join("Imported")
 }
 
+/// Where problematic files are moved when import fails
+pub fn problem_path() -> PathBuf {
+    player_root().join("Problem")
+}
+
 /// Ensure all required directories exist
 pub fn ensure_directories() -> Result<(), StorageError> {
     fs::create_dir_all(player_root())?;
     fs::create_dir_all(music_path())?;
     fs::create_dir_all(import_path())?;
     fs::create_dir_all(imported_path())?;
+    fs::create_dir_all(problem_path())?;
     Ok(())
 }
 
@@ -166,6 +172,18 @@ impl SongEntry {
     }
 
     pub fn into_song(self) -> Song {
+        if self.duration.is_zero() {
+            panic!(
+                "Song has zero duration: id={}, path={:?}, title={:?}",
+                self.id, self.path, self.title
+            );
+        }
+        if self.duration.as_secs() > 24 * 60 * 60 {
+            panic!(
+                "Song has unreasonable duration (>24h, likely ms-as-seconds bug): id={}, path={:?}, title={:?}, duration={:?}",
+                self.id, self.path, self.title, self.duration
+            );
+        }
         Song {
             id: SongId(self.id),
             file: AudioFile {

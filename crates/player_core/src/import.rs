@@ -1,12 +1,14 @@
-use std::fs;
+use std::fs::{self, File};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use id3::TagLike;
+use rodio::{Decoder, Source};
 
 use crate::audio::{AudioFile, AudioFormat};
 use crate::library::{Library, Song, SongId};
-use crate::storage::{import_path, imported_path, music_path};
+use crate::storage::{import_path, imported_path, music_path, problem_path};
 
 // ============================================================================
 // Error Types
@@ -15,6 +17,7 @@ use crate::storage::{import_path, imported_path, music_path};
 #[derive(Debug)]
 pub enum ImportError {
     UnknownFormat,
+    NoDuration(PathBuf),
     IoError(std::io::Error),
     Id3Error(id3::Error),
 }
@@ -35,6 +38,7 @@ impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ImportError::UnknownFormat => write!(f, "Unknown audio format"),
+            ImportError::NoDuration(path) => write!(f, "Could not determine duration: {:?}", path),
             ImportError::IoError(e) => write!(f, "IO error: {}", e),
             ImportError::Id3Error(e) => write!(f, "ID3 error: {}", e),
         }
@@ -139,10 +143,20 @@ impl MetadataReader for Mp3MetadataReader {
             album_artist: tag.album_artist().map(String::from),
             album: tag.album().map(String::from),
             track_number: tag.track(),
-            duration: tag.duration().map(|secs| Duration::from_secs(secs as u64)),
+            duration: get_audio_duration(&file.path).or_else(|| {
+                tag.duration()
+                    .map(|millis| Duration::from_millis(millis as u64))
+            }),
             chapters: Vec::new(),
         })
     }
+}
+
+fn get_audio_duration(path: &Path) -> Option<Duration> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let decoder = Decoder::new(reader).ok()?;
+    decoder.total_duration()
 }
 
 // ============================================================================
@@ -255,11 +269,24 @@ fn generate_archived_path(original_path: &Path) -> PathBuf {
     imported_path().join(relative)
 }
 
+fn generate_problem_path(original_path: &Path) -> PathBuf {
+    let import_dir = import_path();
+
+    // Try to preserve relative path structure
+    let relative = original_path
+        .strip_prefix(&import_dir)
+        .unwrap_or(original_path);
+
+    problem_path().join(relative)
+}
+
 /// Import a single file into the library:
 /// 1. Read metadata
 /// 2. Copy to ~/Player/Music/Artist/Album/
 /// 3. Move original to ~/Player/Imported/
 /// 4. Return the new Song
+///
+/// If duration cannot be determined, moves file to ~/Player/Problem/ and returns NoDuration error.
 pub fn import_file_to_library(
     source_path: impl AsRef<Path>,
     next_id: u64,
@@ -268,6 +295,20 @@ pub fn import_file_to_library(
 
     // Read metadata from source
     let imported = read_metadata(source_path)?;
+
+    // Check duration before we copy anything
+    let duration = match imported.metadata.duration {
+        Some(d) => d,
+        None => {
+            // Move to Problem folder
+            let problem_dest = generate_problem_path(source_path);
+            if let Some(parent) = problem_dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::rename(source_path, &problem_dest)?;
+            return Err(ImportError::NoDuration(problem_dest));
+        }
+    };
 
     // Generate destination paths
     let library_path = generate_library_path(&imported.metadata, imported.file.format);
@@ -301,7 +342,7 @@ pub fn import_file_to_library(
         artist: imported.metadata.artist.or(imported.metadata.album_artist),
         album: imported.metadata.album,
         track_number: imported.metadata.track_number,
-        duration: imported.metadata.duration.unwrap_or(Duration::ZERO),
+        duration,
     };
 
     Ok(ImportResult {
