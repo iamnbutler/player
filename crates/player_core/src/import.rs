@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use id3::TagLike;
@@ -103,4 +103,31 @@ pub fn import_file(path: impl AsRef<Path>) -> Result<ImportedFile, ImportError> 
     };
 
     Ok(ImportedFile { file, metadata })
+}
+
+/// Recursively scans a directory for audio files and imports them.
+/// Returns a list of successfully imported files (skips files that fail to import).
+pub fn import_directory(path: impl AsRef<Path>) -> Result<Vec<ImportedFile>, ImportError> {
+    let path = path.as_ref();
+    let mut imported = Vec::new();
+    let mut paths_to_scan: Vec<PathBuf> = vec![path.to_path_buf()];
+
+    while let Some(current_path) = paths_to_scan.pop() {
+        let entries = std::fs::read_dir(&current_path)?;
+
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+
+            if entry_path.is_dir() {
+                paths_to_scan.push(entry_path);
+            } else if entry_path.is_file() {
+                // Try to import the file, skip if it fails (unknown format, etc.)
+                if let Ok(imported_file) = import_file(&entry_path) {
+                    imported.push(imported_file);
+                }
+            }
+        }
+    }
+
+    Ok(imported)
 }

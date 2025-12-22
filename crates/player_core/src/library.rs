@@ -3,6 +3,14 @@ use std::time::Duration;
 
 use crate::audio::AudioFile;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SortOrder {
+    #[default]
+    Artist,
+    Album,
+    Title,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SongId(pub u64);
 
@@ -47,4 +55,44 @@ pub enum MediaItem {
 pub struct Library {
     pub songs: HashMap<SongId, Song>,
     pub audiobooks: HashMap<AudiobookId, Audiobook>,
+}
+
+impl Library {
+    /// Returns a sorted list of songs based on the given sort order.
+    pub fn list(&self, sort_order: SortOrder) -> Vec<Song> {
+        let mut songs: Vec<Song> = self.songs.values().cloned().collect();
+
+        match sort_order {
+            SortOrder::Artist => {
+                songs.sort_by(|a, b| {
+                    let artist_a = a.artist.as_deref().unwrap_or("");
+                    let artist_b = b.artist.as_deref().unwrap_or("");
+                    artist_a
+                        .cmp(artist_b)
+                        .then_with(|| {
+                            let album_a = a.album.as_deref().unwrap_or("");
+                            let album_b = b.album.as_deref().unwrap_or("");
+                            album_a.cmp(album_b)
+                        })
+                        .then_with(|| a.track_number.cmp(&b.track_number))
+                        .then_with(|| a.title.cmp(&b.title))
+                });
+            }
+            SortOrder::Album => {
+                songs.sort_by(|a, b| {
+                    let album_a = a.album.as_deref().unwrap_or("");
+                    let album_b = b.album.as_deref().unwrap_or("");
+                    album_a
+                        .cmp(album_b)
+                        .then_with(|| a.track_number.cmp(&b.track_number))
+                        .then_with(|| a.title.cmp(&b.title))
+                });
+            }
+            SortOrder::Title => {
+                songs.sort_by(|a, b| a.title.cmp(&b.title));
+            }
+        }
+
+        songs
+    }
 }

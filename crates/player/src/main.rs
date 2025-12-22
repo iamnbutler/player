@@ -1,7 +1,8 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::*;
-use player_core::{AudioFile, AudioFormat, Library, Song, SongId};
+use player_core::{import_directory, Library, Song, SongId};
 use ui::ListView;
 
 struct Player {
@@ -22,8 +23,8 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         cx.open_window(WindowOptions::default(), |_window, cx| {
             cx.new(|cx| {
-                // Create the library entity with sample data
-                let library = cx.new(|_cx| create_sample_library());
+                // Import tracks from the _import directory
+                let library = cx.new(|_cx| load_library_from_import());
 
                 // Create the list view with the library
                 let list_view = cx.new(|cx| ListView::new(library, cx));
@@ -35,96 +36,34 @@ fn main() {
     });
 }
 
-fn create_sample_library() -> Library {
+fn load_library_from_import() -> Library {
     let mut library = Library::default();
 
-    let sample_songs = vec![
-        (
-            "Bohemian Rhapsody",
-            Some("Queen"),
-            Some("A Night at the Opera"),
-            354,
-        ),
-        (
-            "Stairway to Heaven",
-            Some("Led Zeppelin"),
-            Some("Led Zeppelin IV"),
-            482,
-        ),
-        (
-            "Hotel California",
-            Some("Eagles"),
-            Some("Hotel California"),
-            391,
-        ),
-        ("Imagine", Some("John Lennon"), Some("Imagine"), 187),
-        (
-            "Smells Like Teen Spirit",
-            Some("Nirvana"),
-            Some("Nevermind"),
-            301,
-        ),
-        (
-            "Billie Jean",
-            Some("Michael Jackson"),
-            Some("Thriller"),
-            294,
-        ),
-        (
-            "Sweet Child O' Mine",
-            Some("Guns N' Roses"),
-            Some("Appetite for Destruction"),
-            356,
-        ),
-        (
-            "Comfortably Numb",
-            Some("Pink Floyd"),
-            Some("The Wall"),
-            382,
-        ),
-        (
-            "Like a Rolling Stone",
-            Some("Bob Dylan"),
-            Some("Highway 61 Revisited"),
-            369,
-        ),
-        ("Hey Jude", Some("The Beatles"), Some("Single"), 431),
-        ("Purple Rain", Some("Prince"), Some("Purple Rain"), 521),
-        (
-            "Wonderwall",
-            Some("Oasis"),
-            Some("(What's the Story) Morning Glory?"),
-            259,
-        ),
-        (
-            "Lose Yourself",
-            Some("Eminem"),
-            Some("8 Mile Soundtrack"),
-            326,
-        ),
-        (
-            "Take On Me",
-            Some("a-ha"),
-            Some("Hunting High and Low"),
-            225,
-        ),
-        ("Don't Stop Believin'", Some("Journey"), Some("Escape"), 251),
-    ];
+    // Path to the import directory
+    let import_path = PathBuf::from("_import");
 
-    for (id, (title, artist, album, duration_secs)) in sample_songs.into_iter().enumerate() {
-        let song = Song {
-            id: SongId(id as u64),
-            file: AudioFile {
-                path: format!("/music/{}.mp3", title.to_lowercase().replace(' ', "_")).into(),
-                format: AudioFormat::Mp3,
-            },
-            title: title.to_string(),
-            artist: artist.map(String::from),
-            album: album.map(String::from),
-            track_number: Some((id + 1) as u32),
-            duration: Duration::from_secs(duration_secs),
-        };
-        library.songs.insert(song.id, song);
+    match import_directory(&import_path) {
+        Ok(imported_files) => {
+            for (id, imported) in imported_files.into_iter().enumerate() {
+                let song = Song {
+                    id: SongId(id as u64),
+                    file: imported.file,
+                    title: imported
+                        .metadata
+                        .title
+                        .unwrap_or_else(|| "Unknown Title".to_string()),
+                    artist: imported.metadata.artist,
+                    album: imported.metadata.album,
+                    track_number: imported.metadata.track_number,
+                    duration: imported.metadata.duration.unwrap_or(Duration::ZERO),
+                };
+                library.songs.insert(song.id, song);
+            }
+            println!("Imported {} tracks", library.songs.len());
+        }
+        Err(e) => {
+            eprintln!("Failed to import directory: {:?}", e);
+        }
     }
 
     library

@@ -2,11 +2,12 @@ use gpui::{
     div, prelude::*, uniform_list, Context, Entity, IntoElement, Render, SharedString,
     UniformListScrollHandle, Window,
 };
-use player_core::Library;
+use player_core::{Library, SortOrder};
 
 pub struct ListView {
     library: Entity<Library>,
     scroll_handle: UniformListScrollHandle,
+    sort_order: SortOrder,
 }
 
 impl ListView {
@@ -14,7 +15,13 @@ impl ListView {
         Self {
             library,
             scroll_handle: UniformListScrollHandle::new(),
+            sort_order: SortOrder::default(),
         }
+    }
+
+    pub fn sort_order(mut self, sort_order: SortOrder) -> Self {
+        self.sort_order = sort_order;
+        self
     }
 }
 
@@ -22,8 +29,8 @@ impl Render for ListView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let library = self.library.read(cx);
 
-        // Collect songs into a vector for rendering
-        let songs: Vec<_> = library.songs.values().cloned().collect();
+        // Get sorted list of songs
+        let songs = library.list(self.sort_order);
         let song_count = songs.len();
 
         div().size_full().child(
