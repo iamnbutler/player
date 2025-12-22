@@ -4,9 +4,20 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[lib]
+name = "player"
+path = "src/lib.rs"
+
 [[bin]]
 name = "player"
 path = "src/main.rs"
 
 [dependencies]
+dirs = "6.0.0"
 gpui.workspace = true
+id3 = "1.16.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.146"
+
+[dev-dependencies]
+tempfile = "3.23.0"
