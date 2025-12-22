@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use gpui::{
-    div, prelude::*, rems, uniform_list, Context, Entity, EventEmitter, IntoElement, Render,
+    div, prelude::*, rems, uniform_list, App, Context, Entity, EventEmitter, IntoElement, Render,
     SharedString, UniformListScrollHandle, Window,
 };
 use gpuikit::layout::h_stack;
@@ -42,6 +42,15 @@ impl ListView {
     pub fn set_playing_song(&mut self, song_id: Option<SongId>, cx: &mut Context<Self>) {
         self.playing_song_id = song_id;
         cx.notify();
+    }
+
+    pub fn next_song(&self, cx: &App) -> Option<Song> {
+        let playing_id = self.playing_song_id?;
+        let library = self.library.read(cx);
+        let songs: Vec<Song> = library.list(self.sort_order);
+
+        let current_index = songs.iter().position(|s| s.id == playing_id)?;
+        songs.get(current_index + 1).cloned()
     }
 }
 

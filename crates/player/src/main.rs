@@ -86,6 +86,10 @@ impl Player {
                 cx.notify();
             }
             AudioPlayerEvent::PlaybackFinished => {
+                let next_song = self.list_view.read(cx).next_song(cx);
+                if let Some(song) = next_song {
+                    self.play_song(song, cx);
+                }
                 cx.notify();
             }
         }
@@ -376,6 +380,10 @@ fn progress_bar(
 
 impl Render for Player {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.audio_player.update(cx, |player, cx| {
+            player.check_and_handle_finished(cx);
+        });
+
         let theme = cx.theme();
         let audio_player = self.audio_player.read(cx);
         let playback_state = audio_player.state();

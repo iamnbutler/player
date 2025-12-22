@@ -163,6 +163,18 @@ impl AudioPlayer {
     pub fn is_finished(&self) -> bool {
         self.sink.as_ref().is_some_and(|s| s.empty())
     }
+
+    pub fn check_and_handle_finished(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.state == PlaybackState::Playing && self.is_finished() {
+            self.stop_internal();
+            self.state = PlaybackState::Stopped;
+            cx.emit(AudioPlayerEvent::PlaybackFinished);
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
