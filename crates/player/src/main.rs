@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::*;
-use player_core::{import_directory, Library, Song, SongId};
+use player_core::{import_directory, load_library, save_library, Library, Song, SongId};
 use ui::ListView;
 
 struct Player {
@@ -23,10 +23,8 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         cx.open_window(WindowOptions::default(), |_window, cx| {
             cx.new(|cx| {
-                // Import tracks from the _import directory
-                let library = cx.new(|_cx| load_library_from_import());
+                let library = cx.new(|_cx| load_or_import_library());
 
-                // Create the list view with the library
                 let list_view = cx.new(|cx| ListView::new(library, cx));
 
                 Player { list_view }
@@ -36,10 +34,38 @@ fn main() {
     });
 }
 
-fn load_library_from_import() -> Library {
+fn load_or_import_library() -> Library {
+    // Try to load existing library from storage
+    match load_library() {
+        Ok(library) if !library.songs.is_empty() => {
+            println!("Loaded {} tracks from library", library.songs.len());
+            return library;
+        }
+        Ok(_) => {
+            println!("Library is empty, will import...");
+        }
+        Err(e) => {
+            eprintln!("Failed to load library: {:?}, will import...", e);
+        }
+    }
+
+    // Fall back to importing from _import directory
+    let library = import_from_directory();
+
+    // Save the imported library
+    if !library.songs.is_empty() {
+        match save_library(&library) {
+            Ok(()) => println!("Saved library to disk"),
+            Err(e) => eprintln!("Failed to save library: {:?}", e),
+        }
+    }
+
+    library
+}
+
+fn import_from_directory() -> Library {
     let mut library = Library::default();
 
-    // Path to the import directory
     let import_path = PathBuf::from("_import");
 
     match import_directory(&import_path) {
