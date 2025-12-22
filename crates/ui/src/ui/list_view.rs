@@ -55,8 +55,6 @@ impl Render for ListView {
                                     .flex()
                                     .w_full()
                                     .px_2()
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(gpui::rgb(0x333333)))
                                     .child(
                                         div()
                                             .flex_1()

@@ -55,9 +55,58 @@ pub enum MediaItem {
 pub struct Library {
     pub songs: HashMap<SongId, Song>,
     pub audiobooks: HashMap<AudiobookId, Audiobook>,
+    next_song_id: u64,
+    next_audiobook_id: u64,
 }
 
 impl Library {
+    /// Create a new empty library
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get the next available song ID and increment the counter
+    pub fn next_song_id(&mut self) -> SongId {
+        let id = SongId(self.next_song_id);
+        self.next_song_id += 1;
+        id
+    }
+
+    /// Get the next available audiobook ID and increment the counter
+    pub fn next_audiobook_id(&mut self) -> AudiobookId {
+        let id = AudiobookId(self.next_audiobook_id);
+        self.next_audiobook_id += 1;
+        id
+    }
+
+    /// Add a song to the library
+    pub fn add_song(&mut self, song: Song) {
+        // Update next_song_id if necessary
+        if song.id.0 >= self.next_song_id {
+            self.next_song_id = song.id.0 + 1;
+        }
+        self.songs.insert(song.id, song);
+    }
+
+    /// Add an audiobook to the library
+    pub fn add_audiobook(&mut self, audiobook: Audiobook) {
+        // Update next_audiobook_id if necessary
+        if audiobook.id.0 >= self.next_audiobook_id {
+            self.next_audiobook_id = audiobook.id.0 + 1;
+        }
+        self.audiobooks.insert(audiobook.id, audiobook);
+    }
+
+    /// Check if the library is empty
+    pub fn is_empty(&self) -> bool {
+        self.songs.is_empty() && self.audiobooks.is_empty()
+    }
+
+    /// Get total count of items in library
+    pub fn len(&self) -> usize {
+        self.songs.len() + self.audiobooks.len()
+    }
+
     /// Returns a sorted list of songs based on the given sort order.
     pub fn list(&self, sort_order: SortOrder) -> Vec<Song> {
         let mut songs: Vec<Song> = self.songs.values().cloned().collect();
