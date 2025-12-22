@@ -28,6 +28,7 @@ impl From<id3::Error> for ImportError {
 pub struct Metadata {
     pub title: Option<String>,
     pub artist: Option<String>,
+    pub album_artist: Option<String>,
     pub album: Option<String>,
     pub track_number: Option<u32>,
     pub duration: Option<Duration>,
@@ -80,6 +81,7 @@ impl MetadataReader for Mp3MetadataReader {
         Ok(Metadata {
             title: tag.title().map(String::from),
             artist: tag.artist().map(String::from),
+            album_artist: tag.album_artist().map(String::from),
             album: tag.album().map(String::from),
             track_number: tag.track(),
             duration: tag.duration().map(|secs| Duration::from_secs(secs as u64)),

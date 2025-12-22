@@ -52,7 +52,7 @@ fn load_library_from_import() -> Library {
                         .metadata
                         .title
                         .unwrap_or_else(|| "Unknown Title".to_string()),
-                    artist: imported.metadata.artist,
+                    artist: imported.metadata.artist.or(imported.metadata.album_artist),
                     album: imported.metadata.album,
                     track_number: imported.metadata.track_number,
                     duration: imported.metadata.duration.unwrap_or(Duration::ZERO),
