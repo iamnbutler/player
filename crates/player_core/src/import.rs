@@ -353,24 +353,29 @@ pub fn import_all_pending(library: &mut Library) -> Vec<Result<ImportResult, Imp
         }
     }
 
+    // Clean up empty directories in Import folder
+    cleanup_empty_directories(&import_dir);
+
     results
 }
 
-// ============================================================================
-// Legacy function for backwards compatibility
-// ============================================================================
+/// Recursively remove empty directories from the given path
+fn cleanup_empty_directories(path: &Path) {
+    if !path.is_dir() {
+        return;
+    }
 
-/// Recursively scans a directory for audio files and imports them.
-/// Returns a list of successfully imported files (skips files that fail to import).
-/// NOTE: This does NOT copy/move files - use import_all_pending() for full workflow.
-#[deprecated(note = "Use scan_directory() or import_all_pending() instead")]
-pub fn import_directory(path: impl AsRef<Path>) -> Result<Vec<ImportedFile>, ImportError> {
-    scan_directory(path)
-}
+    // First, recurse into subdirectories
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                cleanup_empty_directories(&entry_path);
+            }
+        }
+    }
 
-/// Import a file (read metadata only, no copy/move)
-/// NOTE: This does NOT copy/move files - use import_file_to_library() for full workflow.
-#[deprecated(note = "Use read_metadata() or import_file_to_library() instead")]
-pub fn import_file(path: impl AsRef<Path>) -> Result<ImportedFile, ImportError> {
-    read_metadata(path)
+    // Then try to remove this directory if it's empty
+    // (This will fail silently if the directory is not empty, which is fine)
+    let _ = fs::remove_dir(path);
 }
