@@ -1,14 +1,25 @@
+use std::ops::Range;
+
 use gpui::{
-    div, prelude::*, uniform_list, Context, Entity, IntoElement, Render, SharedString,
-    UniformListScrollHandle, Window,
+    div, prelude::*, rgb, uniform_list, Context, Entity, EventEmitter, IntoElement, Render,
+    SharedString, UniformListScrollHandle, Window,
 };
-use player_core::{Library, SortOrder};
+use player_core::{Library, Song, SongId, SortOrder};
 
 pub struct ListView {
     library: Entity<Library>,
     scroll_handle: UniformListScrollHandle,
     sort_order: SortOrder,
+    playing_song_id: Option<SongId>,
+    selected_index: Option<usize>,
 }
+
+pub enum ListViewEvent {
+    SongSelected(Song),
+    SongDoubleClicked(Song),
+}
+
+impl EventEmitter<ListViewEvent> for ListView {}
 
 impl ListView {
     pub fn new(library: Entity<Library>, _cx: &mut Context<Self>) -> Self {
@@ -16,6 +27,8 @@ impl ListView {
             library,
             scroll_handle: UniformListScrollHandle::new(),
             sort_order: SortOrder::default(),
+            playing_song_id: None,
+            selected_index: None,
         }
     }
 
@@ -23,19 +36,27 @@ impl ListView {
         self.sort_order = sort_order;
         self
     }
+
+    pub fn set_playing_song(&mut self, song_id: Option<SongId>, cx: &mut Context<Self>) {
+        self.playing_song_id = song_id;
+        cx.notify();
+    }
 }
 
 impl Render for ListView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let library = self.library.read(cx);
 
-        // Get sorted list of songs
-        let songs = library.list(self.sort_order);
+        let songs: Vec<Song> = library.list(self.sort_order);
         let song_count = songs.len();
+        let playing_song_id = self.playing_song_id;
+        let selected_index = self.selected_index;
 
         div().size_full().child(
-            uniform_list("track-list", song_count, {
-                move |range, _window, _cx| {
+            uniform_list(
+                "track-list",
+                song_count,
+                cx.processor(move |_this, range: Range<usize>, _window, cx| {
                     let mut items = Vec::new();
 
                     for ix in range {
@@ -47,37 +68,109 @@ impl Render for ListView {
                                 .unwrap_or_else(|| "Unknown Artist".to_string())
                                 .into();
 
+                            let is_playing = playing_song_id == Some(song.id);
+                            let is_selected = selected_index == Some(ix);
+
+                            let bg_color = if is_playing {
+                                rgb(0x2d4a3e)
+                            } else if is_selected {
+                                rgb(0x333333)
+                            } else {
+                                rgb(0x1a1a1a)
+                            };
+
+                            let hover_bg = if is_playing {
+                                rgb(0x3d5a4e)
+                            } else {
+                                rgb(0x2a2a2a)
+                            };
+
+                            let title_color = if is_playing {
+                                rgb(0x4ade80)
+                            } else {
+                                rgb(0xffffff)
+                            };
+
+                            let song_for_click = song.clone();
+
                             items.push(
                                 div()
                                     .id(ix)
-                                    .h_6()
+                                    .h_7()
                                     .items_center()
                                     .flex()
                                     .w_full()
                                     .px_2()
+                                    .bg(bg_color)
+                                    .hover(move |style| style.bg(hover_bg))
+                                    .cursor_pointer()
+                                    .child(
+                                        div()
+                                            .w_6()
+                                            .text_xs()
+                                            .text_color(rgb(0x888888))
+                                            .when(is_playing, |el| {
+                                                el.text_color(rgb(0x4ade80)).child("▶")
+                                            })
+                                            .when(!is_playing, |el| {
+                                                el.child(format!("{}", ix + 1))
+                                            }),
+                                    )
                                     .child(
                                         div()
                                             .flex_1()
                                             .text_sm()
-                                            .text_color(gpui::rgb(0xffffff))
+                                            .text_color(title_color)
+                                            .overflow_hidden()
                                             .child(title),
                                     )
                                     .child(
                                         div()
                                             .flex_1()
                                             .text_xs()
-                                            .text_color(gpui::rgb(0x888888))
+                                            .text_color(rgb(0x888888))
+                                            .overflow_hidden()
                                             .child(artist),
-                                    ),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_12()
+                                            .text_xs()
+                                            .text_color(rgb(0x666666))
+                                            .child(format_duration(song.duration)),
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, event: &gpui::ClickEvent, _window, cx| {
+                                            this.selected_index = Some(ix);
+
+                                            if event.click_count() >= 2 {
+                                                cx.emit(ListViewEvent::SongDoubleClicked(
+                                                    song_for_click.clone(),
+                                                ));
+                                            } else {
+                                                cx.emit(ListViewEvent::SongSelected(
+                                                    song_for_click.clone(),
+                                                ));
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
                             );
                         }
                     }
 
                     items
-                }
-            })
+                }),
+            )
             .track_scroll(&self.scroll_handle)
             .size_full(),
         )
     }
+}
+
+fn format_duration(duration: std::time::Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{}:{:02}", minutes, seconds)
 }

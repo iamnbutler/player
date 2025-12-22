@@ -1,38 +1,99 @@
+use gpui::prelude::*;
 use gpui::*;
 use player_core::{
-    ensure_directories, import_all_pending, import_path, save_library, Library, LibraryReader,
-    LoadedEntry,
+    ensure_directories, import_all_pending, import_path, save_library, AudioPlayer,
+    AudioPlayerEvent, Library, LibraryReader, LoadedEntry, PlaybackState, Song,
 };
-use ui::ListView;
+use ui::{ListView, ListViewEvent};
 
 struct Player {
     library: Entity<Library>,
     list_view: Entity<ListView>,
+    audio_player: Entity<AudioPlayer>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Player {
     fn new(cx: &mut Context<Self>) -> Self {
-        // Ensure all directories exist
         if let Err(e) = ensure_directories() {
             eprintln!("Failed to create directories: {}", e);
         }
 
-        // Create the library entity
         let library = cx.new(|_cx| Library::new());
 
-        // Stream load the library from disk
         Self::stream_load_library(library.clone(), cx);
 
-        // Create the list view
+        let audio_player =
+            cx.new(|cx| AudioPlayer::new(cx).expect("Failed to create audio player"));
+
         let list_view = cx.new(|cx| ListView::new(library.clone(), cx));
 
-        Player { library, list_view }
+        let subscriptions = vec![
+            cx.subscribe(&list_view, Self::handle_list_view_event),
+            cx.subscribe(&audio_player, Self::handle_audio_player_event),
+        ];
+
+        Player {
+            library,
+            list_view,
+            audio_player,
+            _subscriptions: subscriptions,
+        }
     }
 
-    /// Stream load the library in chunks to avoid blocking
+    fn handle_list_view_event(
+        &mut self,
+        _list_view: Entity<ListView>,
+        event: &ListViewEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ListViewEvent::SongSelected(_song) => {}
+            ListViewEvent::SongDoubleClicked(song) => {
+                self.play_song(song.clone(), cx);
+            }
+        }
+    }
+
+    fn handle_audio_player_event(
+        &mut self,
+        _audio_player: Entity<AudioPlayer>,
+        event: &AudioPlayerEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            AudioPlayerEvent::StateChanged(_state) => {
+                cx.notify();
+            }
+            AudioPlayerEvent::SongChanged(song) => {
+                let song_id = song.as_ref().map(|s| s.id);
+                self.list_view.update(cx, |list_view, cx| {
+                    list_view.set_playing_song(song_id, cx);
+                });
+                cx.notify();
+            }
+            AudioPlayerEvent::PlaybackFinished => {
+                cx.notify();
+            }
+        }
+    }
+
+    fn play_song(&mut self, song: Song, cx: &mut Context<Self>) {
+        self.audio_player.update(cx, |player, cx| {
+            if let Err(e) = player.play_song(song, cx) {
+                eprintln!("Failed to play song: {}", e);
+            }
+        });
+    }
+
+    fn toggle_playback(&mut self, cx: &mut Context<Self>) {
+        self.audio_player.update(cx, |player, cx| {
+            player.toggle_playback(cx);
+        });
+    }
+
     fn stream_load_library(library: Entity<Library>, cx: &mut Context<Self>) {
         cx.spawn(async move |_this, cx| {
-            // Open the library reader
             let reader = match LibraryReader::open() {
                 Ok(Some(reader)) => reader,
                 Ok(None) => {
@@ -55,7 +116,6 @@ impl Player {
                         batch.push(song);
                         song_count += 1;
 
-                        // Process in batches to avoid holding the lock too long
                         if batch.len() >= BATCH_SIZE {
                             let songs_to_add = std::mem::take(&mut batch);
                             let _ = library.update(cx, |lib, cx| {
@@ -72,16 +132,13 @@ impl Player {
                             cx.notify();
                         });
                     }
-                    LoadedEntry::Meta(_) => {
-                        // Metadata is informational
-                    }
+                    LoadedEntry::Meta(_) => {}
                     LoadedEntry::Skipped { line_number, error } => {
                         eprintln!("Warning: Skipped line {}: {}", line_number, error);
                     }
                 }
             }
 
-            // Add any remaining songs
             if !batch.is_empty() {
                 let _ = library.update(cx, |lib, cx| {
                     for song in batch {
@@ -96,17 +153,14 @@ impl Player {
         .detach();
     }
 
-    /// Scan for new files in the Import directory
     fn scan_for_imports(&mut self, cx: &mut Context<Self>) {
         let library = self.library.clone();
 
         cx.spawn(async move |_this, cx| {
             println!("Scanning {} for new files...", import_path().display());
 
-            // Load current library state into a temporary library for import
             let mut lib = Library::new();
 
-            // Copy current library state
             if let Ok(current_songs) =
                 library.read_with(cx, |current_lib, _cx| current_lib.songs.clone())
             {
@@ -119,22 +173,18 @@ impl Player {
                 lib.audiobooks = current_audiobooks;
             }
 
-            // Run import
             let results = import_all_pending(&mut lib);
 
-            // Report results
             let success_count = results.iter().filter(|r| r.is_ok()).count();
             let error_count = results.iter().filter(|r| r.is_err()).count();
 
             if success_count > 0 {
                 println!("Imported {} new files", success_count);
 
-                // Save updated library
                 if let Err(e) = save_library(&lib) {
                     eprintln!("Failed to save library: {}", e);
                 }
 
-                // Update the library entity with new songs
                 let new_songs = lib.songs;
                 let _ = library.update(cx, |current_lib, cx| {
                     for (id, song) in new_songs {
@@ -166,13 +216,16 @@ impl Player {
 impl Render for Player {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let song_count = self.library.read(cx).songs.len();
+        let audio_player = self.audio_player.read(cx);
+        let playback_state = audio_player.state();
+        let current_song = audio_player.current_song().cloned();
+        let position = audio_player.position();
 
         div()
             .flex()
             .flex_col()
             .bg(rgb(0x1a1a1a))
             .size_full()
-            // Header
             .child(
                 div()
                     .flex()
@@ -205,16 +258,83 @@ impl Render for Player {
                             })),
                     ),
             )
-            // List view
             .child(div().flex_1().child(self.list_view.clone()))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py_3()
+                    .border_t_1()
+                    .border_color(rgb(0x333333))
+                    .bg(rgb(0x222222))
+                    .child(
+                        div()
+                            .id("play-pause-button")
+                            .w_10()
+                            .h_10()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(rgb(0x4ade80))
+                            .hover(|style| style.bg(rgb(0x5aee90)))
+                            .cursor_pointer()
+                            .text_color(rgb(0x000000))
+                            .text_lg()
+                            .child(match playback_state {
+                                PlaybackState::Playing => "⏸",
+                                PlaybackState::Paused | PlaybackState::Stopped => "▶",
+                            })
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.toggle_playback(cx);
+                            })),
+                    )
+                    .child(div().flex_1().flex().flex_col().gap_1().map(|this| {
+                        if let Some(song) = &current_song {
+                            this.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(0xffffff))
+                                    .child(song.title.clone()),
+                            )
+                            .child(
+                                div().text_xs().text_color(rgb(0x888888)).child(
+                                    song.artist
+                                        .clone()
+                                        .unwrap_or_else(|| "Unknown Artist".to_string()),
+                                ),
+                            )
+                        } else {
+                            this.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(0x666666))
+                                    .child("No track playing"),
+                            )
+                        }
+                    }))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x888888))
+                            .child(format_duration(position)),
+                    ),
+            )
     }
+}
+
+fn format_duration(duration: std::time::Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{}:{:02}", minutes, seconds)
 }
 
 fn main() {
     Application::new().run(|cx: &mut App| {
-        cx.open_window(WindowOptions::default(), |_window, cx| {
-            cx.new(|cx| Player::new(cx))
-        })
-        .unwrap();
+        cx.open_window(WindowOptions::default(), |_window, cx| cx.new(Player::new))
+            .unwrap();
     });
 }
