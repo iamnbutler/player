@@ -1,9 +1,12 @@
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use id3::{Tag, TagLike};
+use rayon::prelude::*;
 use rodio::{Decoder, Source};
 
 use crate::audio::{AudioFile, AudioFormat};
@@ -184,8 +187,9 @@ fn calculate_duration_by_decoding(path: &Path) -> Option<Duration> {
 
     let total_samples: u64 = decoder.count() as u64;
     let duration_secs = total_samples as f64 / (sample_rate as f64 * channels as f64);
+    let rounded_secs = duration_secs.round() as u64;
 
-    Some(Duration::from_secs_f64(duration_secs))
+    Some(Duration::from_secs(rounded_secs))
 }
 
 fn write_duration_to_file(path: &Path, duration: Duration) -> Result<(), ImportError> {
@@ -458,90 +462,117 @@ fn cleanup_empty_directories(path: &Path) {
     let _ = fs::remove_dir(path);
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RepairResult {
     pub path: PathBuf,
     pub duration: Duration,
     pub moved_to: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RepairFailure {
     pub path: PathBuf,
     pub reason: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct RepairProgress {
+    pub current: usize,
+    pub total: usize,
+    pub current_file: PathBuf,
+}
+
 /// Attempt to repair files in the Problem folder by calculating duration and writing it to ID3.
 /// Successfully repaired files are moved back to the Import folder.
 pub fn repair_problem_files() -> (Vec<RepairResult>, Vec<RepairFailure>) {
+    repair_problem_files_with_progress(|_| {})
+}
+
+/// Attempt to repair files in the Problem folder with progress callback.
+/// The callback receives progress info for each file being processed.
+/// Uses parallel processing for CPU-bound decoding work.
+pub fn repair_problem_files_with_progress<F>(
+    on_progress: F,
+) -> (Vec<RepairResult>, Vec<RepairFailure>)
+where
+    F: Fn(RepairProgress) + Send + Sync,
+{
     let problem_dir = problem_path();
-    let mut successes = Vec::new();
-    let mut failures = Vec::new();
 
     if !problem_dir.exists() {
-        return (successes, failures);
+        return (Vec::new(), Vec::new());
     }
 
     let files = match scan_directory(&problem_dir) {
         Ok(files) => files,
         Err(e) => {
-            failures.push(RepairFailure {
-                path: problem_dir,
-                reason: format!("Failed to scan directory: {}", e),
-            });
-            return (successes, failures);
+            return (
+                Vec::new(),
+                vec![RepairFailure {
+                    path: problem_dir,
+                    reason: format!("Failed to scan directory: {}", e),
+                }],
+            );
         }
     };
 
-    for file in files {
-        let path = &file.file.path;
+    let total = files.len();
+    let processed = Arc::new(AtomicUsize::new(0));
 
-        let duration = match calculate_duration_by_decoding(path) {
-            Some(d) => d,
-            None => {
-                failures.push(RepairFailure {
-                    path: path.clone(),
-                    reason: "Could not calculate duration by decoding".to_string(),
-                });
-                continue;
-            }
-        };
+    let results: Vec<Result<RepairResult, RepairFailure>> = files
+        .into_par_iter()
+        .map(|file| {
+            let path = file.file.path.clone();
+            let current = processed.fetch_add(1, Ordering::SeqCst) + 1;
 
-        if let Err(e) = write_duration_to_file(path, duration) {
-            failures.push(RepairFailure {
+            on_progress(RepairProgress {
+                current,
+                total,
+                current_file: path.clone(),
+            });
+
+            let duration = calculate_duration_by_decoding(&path).ok_or_else(|| RepairFailure {
+                path: path.clone(),
+                reason: "Could not calculate duration by decoding".to_string(),
+            })?;
+
+            write_duration_to_file(&path, duration).map_err(|e| RepairFailure {
                 path: path.clone(),
                 reason: format!("Failed to write duration to file: {}", e),
-            });
-            continue;
-        }
+            })?;
 
-        let relative = path.strip_prefix(&problem_dir).unwrap_or(path);
-        let import_dest = import_path().join(relative);
+            let relative = path.strip_prefix(&problem_dir).unwrap_or(&path);
+            let import_dest = import_path().join(relative);
 
-        if let Some(parent) = import_dest.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                failures.push(RepairFailure {
+            if let Some(parent) = import_dest.parent() {
+                fs::create_dir_all(parent).map_err(|e| RepairFailure {
                     path: path.clone(),
                     reason: format!("Failed to create import directory: {}", e),
-                });
-                continue;
+                })?;
             }
-        }
 
-        if let Err(e) = fs::rename(path, &import_dest) {
-            failures.push(RepairFailure {
+            fs::rename(&path, &import_dest).map_err(|e| RepairFailure {
                 path: path.clone(),
                 reason: format!("Failed to move to Import: {}", e),
-            });
-            continue;
-        }
+            })?;
 
-        eprintln!("Repaired {:?} with duration {:?}", import_dest, duration);
-        successes.push(RepairResult {
-            path: path.clone(),
-            duration,
-            moved_to: import_dest,
-        });
+            eprintln!("Repaired {:?} with duration {:?}", import_dest, duration);
+            Ok(RepairResult {
+                path,
+                duration,
+                moved_to: import_dest,
+            })
+        })
+        .collect();
+
+    let mut successes = Vec::new();
+    let mut failures = Vec::new();
+
+    for result in results {
+        match result {
+            Ok(success) => successes.push(success),
+            Err(failure) => failures.push(failure),
+        }
     }
 
     cleanup_empty_directories(&problem_dir);

@@ -8,6 +8,7 @@ publish = false
 dirs = "6.0.0"
 id3 = "1.16.3"
 rodio = { version = "0.20", default-features = false, features = ["mp3", "symphonia-mp3"] }
+rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 

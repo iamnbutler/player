@@ -1,3 +1,4 @@
+use futures::FutureExt;
 use gpui::prelude::*;
 use gpui::*;
 use gpuikit::elements::icon_button::icon_button;
@@ -5,8 +6,9 @@ use gpuikit::layout::{h_stack, v_stack};
 use gpuikit::DefaultIcons;
 use gpuikit_theme::{ActiveTheme, Themeable};
 use player_core::{
-    ensure_directories, import_all_pending, problem_path, repair_problem_files, save_library,
-    AudioPlayer, AudioPlayerEvent, Library, LibraryReader, LoadedEntry, PlaybackState, Song,
+    ensure_directories, import_all_pending, problem_path, repair_problem_files_with_progress,
+    save_library, AudioPlayer, AudioPlayerEvent, Library, LibraryReader, LoadedEntry,
+    PlaybackState, RepairProgress, Song,
 };
 use std::time::Duration;
 use ui::{ListView, ListViewEvent};
@@ -16,6 +18,8 @@ struct Player {
     list_view: Entity<ListView>,
     audio_player: Entity<AudioPlayer>,
     status_message: Option<String>,
+    is_syncing: bool,
+    sync_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -44,6 +48,8 @@ impl Player {
             list_view,
             audio_player,
             status_message: None,
+            is_syncing: false,
+            sync_task: None,
             _subscriptions: subscriptions,
         }
     }
@@ -171,9 +177,17 @@ impl Player {
     }
 
     fn sync_library(&mut self, cx: &mut Context<Self>) {
-        let library = self.library.clone();
+        if self.is_syncing {
+            return;
+        }
 
-        cx.spawn(async move |this, cx| {
+        self.is_syncing = true;
+        self.set_status("Starting sync...", cx);
+
+        let library = self.library.clone();
+        let (progress_tx, progress_rx) = smol::channel::unbounded::<RepairProgress>();
+
+        let task = cx.spawn(async move |this, cx| {
             let mut lib = Library::new();
 
             if let Ok(current_songs) =
@@ -195,31 +209,52 @@ impl Player {
                     .unwrap_or(false);
 
             if has_problem_files {
-                let _ = this.update(cx, |this, cx| {
-                    this.set_status("Repairing problem files...", cx);
+                let progress_tx_clone = progress_tx.clone();
+                let repair_task = cx.background_executor().spawn(async move {
+                    repair_problem_files_with_progress(|progress| {
+                        let _ = progress_tx_clone.send_blocking(progress);
+                    })
                 });
 
-                let (repair_successes, repair_failures) = cx
-                    .background_executor()
-                    .spawn(async move { repair_problem_files() })
-                    .await;
+                let mut repair_task = repair_task.fuse();
 
-                if !repair_successes.is_empty() {
-                    let _ = this.update(cx, |this, cx| {
-                        this.set_status(format!("Repaired {} files", repair_successes.len()), cx);
-                    });
-                }
-
-                if !repair_failures.is_empty() {
-                    eprintln!("{} files could not be repaired:", repair_failures.len());
-                    for failure in &repair_failures {
-                        eprintln!("  - {:?}: {}", failure.path, failure.reason);
+                loop {
+                    futures::select_biased! {
+                        progress = progress_rx.recv().fuse() => {
+                            if let Ok(progress) = progress {
+                                let filename = progress.current_file
+                                    .file_name()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                let _ = this.update(cx, |this, cx| {
+                                    this.set_status(
+                                        format!("Repairing {} ({}/{})", filename, progress.current, progress.total),
+                                        cx,
+                                    );
+                                });
+                            }
+                        }
+                        result = &mut repair_task => {
+                            let (repair_successes, repair_failures) = result;
+                            if !repair_successes.is_empty() {
+                                let _ = this.update(cx, |this, cx| {
+                                    this.set_status(format!("Repaired {} files", repair_successes.len()), cx);
+                                });
+                            }
+                            if !repair_failures.is_empty() {
+                                eprintln!("{} files could not be repaired:", repair_failures.len());
+                                for failure in &repair_failures {
+                                    eprintln!("  - {:?}: {}", failure.path, failure.reason);
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
             }
 
             let _ = this.update(cx, |this, cx| {
-                this.set_status("Scanning for new files...", cx);
+                this.set_status("Importing files...", cx);
             });
 
             let (results, lib) = cx
@@ -271,10 +306,13 @@ impl Player {
             cx.background_executor().timer(Duration::from_secs(3)).await;
 
             let _ = this.update(cx, |this, cx| {
+                this.is_syncing = false;
+                this.sync_task = None;
                 this.clear_status(cx);
             });
-        })
-        .detach();
+        });
+
+        self.sync_task = Some(task);
     }
 }
 
@@ -415,13 +453,23 @@ impl Render for Player {
                         div()
                             .id("sync-button")
                             .text_xs()
-                            .text_color(theme.fg_muted())
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(theme.fg()))
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.sync_library(cx);
-                            }))
-                            .child("Sync"),
+                            .text_color(if self.is_syncing {
+                                theme.fg_disabled()
+                            } else {
+                                theme.fg_muted()
+                            })
+                            .when(!self.is_syncing, |el| {
+                                el.cursor_pointer()
+                                    .hover(|s| s.text_color(theme.fg()))
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.sync_library(cx);
+                                    }))
+                            })
+                            .child(if self.is_syncing {
+                                "Syncing..."
+                            } else {
+                                "Sync"
+                            }),
                     ),
             )
     }
