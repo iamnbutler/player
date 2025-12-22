@@ -1,14 +1,12 @@
 use gpui::prelude::*;
 use gpui::*;
-use gpuikit::elements::button::button;
 use gpuikit::elements::icon_button::icon_button;
-use gpuikit::elements::separator::separator;
 use gpuikit::layout::{h_stack, v_stack};
 use gpuikit::DefaultIcons;
 use gpuikit_theme::{ActiveTheme, Themeable};
 use player_core::{
-    ensure_directories, import_all_pending, import_path, save_library, AudioPlayer,
-    AudioPlayerEvent, Library, LibraryReader, LoadedEntry, PlaybackState, Song,
+    ensure_directories, import_all_pending, problem_path, repair_problem_files, save_library,
+    AudioPlayer, AudioPlayerEvent, Library, LibraryReader, LoadedEntry, PlaybackState, Song,
 };
 use std::time::Duration;
 use ui::{ListView, ListViewEvent};
@@ -17,6 +15,7 @@ struct Player {
     library: Entity<Library>,
     list_view: Entity<ListView>,
     audio_player: Entity<AudioPlayer>,
+    status_message: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -44,6 +43,7 @@ impl Player {
             library,
             list_view,
             audio_player,
+            status_message: None,
             _subscriptions: subscriptions,
         }
     }
@@ -160,12 +160,20 @@ impl Player {
         .detach();
     }
 
-    fn scan_for_imports(&mut self, cx: &mut Context<Self>) {
+    fn set_status(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.status_message = Some(message.into());
+        cx.notify();
+    }
+
+    fn clear_status(&mut self, cx: &mut Context<Self>) {
+        self.status_message = None;
+        cx.notify();
+    }
+
+    fn sync_library(&mut self, cx: &mut Context<Self>) {
         let library = self.library.clone();
 
-        cx.spawn(async move |_this, cx| {
-            println!("Scanning {} for new files...", import_path().display());
-
+        cx.spawn(async move |this, cx| {
             let mut lib = Library::new();
 
             if let Ok(current_songs) =
@@ -180,19 +188,60 @@ impl Player {
                 lib.audiobooks = current_audiobooks;
             }
 
-            let results = import_all_pending(&mut lib);
+            let problem_dir = problem_path();
+            let has_problem_files = problem_dir.exists()
+                && std::fs::read_dir(&problem_dir)
+                    .map(|mut d| d.next().is_some())
+                    .unwrap_or(false);
 
+            if has_problem_files {
+                let _ = this.update(cx, |this, cx| {
+                    this.set_status("Repairing problem files...", cx);
+                });
+
+                let (repair_successes, repair_failures) = cx
+                    .background_executor()
+                    .spawn(async move { repair_problem_files() })
+                    .await;
+
+                if !repair_successes.is_empty() {
+                    let _ = this.update(cx, |this, cx| {
+                        this.set_status(format!("Repaired {} files", repair_successes.len()), cx);
+                    });
+                }
+
+                if !repair_failures.is_empty() {
+                    eprintln!("{} files could not be repaired:", repair_failures.len());
+                    for failure in &repair_failures {
+                        eprintln!("  - {:?}: {}", failure.path, failure.reason);
+                    }
+                }
+            }
+
+            let _ = this.update(cx, |this, cx| {
+                this.set_status("Scanning for new files...", cx);
+            });
+
+            let (results, lib) = cx
+                .background_executor()
+                .spawn(async move {
+                    let results = import_all_pending(&mut lib);
+                    (results, lib)
+                })
+                .await;
             let success_count = results.iter().filter(|r| r.is_ok()).count();
             let error_count = results.iter().filter(|r| r.is_err()).count();
 
             if success_count > 0 {
-                println!("Imported {} new files", success_count);
+                let _ = this.update(cx, |this, cx| {
+                    this.set_status(format!("Imported {} files", success_count), cx);
+                });
 
                 if let Err(e) = save_library(&lib) {
                     eprintln!("Failed to save library: {}", e);
                 }
 
-                let new_songs = lib.songs;
+                let new_songs = lib.songs.clone();
                 let _ = library.update(cx, |current_lib, cx| {
                     for (id, song) in new_songs {
                         if !current_lib.songs.contains_key(&id) {
@@ -204,17 +253,26 @@ impl Player {
             }
 
             if error_count > 0 {
-                eprintln!("{} files failed to import", error_count);
-                for result in &results {
-                    if let Err(e) = result {
-                        eprintln!("  - {}", e);
-                    }
-                }
+                let _ = this.update(cx, |this, cx| {
+                    this.set_status(format!("{} files moved to Problem folder", error_count), cx);
+                });
             }
 
-            if success_count == 0 && error_count == 0 {
-                println!("No new files to import");
-            }
+            let final_message = if success_count > 0 || error_count > 0 {
+                "Sync complete".to_string()
+            } else {
+                "No new files".to_string()
+            };
+
+            let _ = this.update(cx, |this, cx| {
+                this.set_status(&final_message, cx);
+            });
+
+            cx.background_executor().timer(Duration::from_secs(3)).await;
+
+            let _ = this.update(cx, |this, cx| {
+                this.clear_status(cx);
+            });
         })
         .detach();
     }
@@ -245,7 +303,6 @@ fn progress_bar(position: Duration, duration: Duration, cx: &App) -> impl IntoEl
 impl Render for Player {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let song_count = self.library.read(cx).songs.len();
         let audio_player = self.audio_player.read(cx);
         let playback_state = audio_player.state();
         let current_song = audio_player.current_song().cloned();
@@ -256,37 +313,17 @@ impl Render for Player {
             .map(|s| s.duration)
             .unwrap_or(Duration::ZERO);
 
+        let status_message = self.status_message.clone();
+
         v_stack()
             .bg(theme.bg())
             .size_full()
-            .child(
-                h_stack()
-                    .items_center()
-                    .justify_between()
-                    .px(rems(0.75))
-                    .py(rems(0.5))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.fg_muted())
-                            .child(format!("{} songs", song_count)),
-                    )
-                    .child(
-                        button("scan-button", "Scan for imports").on_click(cx.listener(
-                            |this, _event, _window, cx| {
-                                this.scan_for_imports(cx);
-                            },
-                        )),
-                    ),
-            )
-            .child(separator())
             .child(
                 div()
                     .flex_1()
                     .overflow_hidden()
                     .child(self.list_view.clone()),
             )
-            .child(separator())
             .child(
                 v_stack()
                     .gap(rems(0.5))
@@ -359,6 +396,32 @@ impl Render for Player {
                                     .w(rems(2.5))
                                     .child(format_duration(duration)),
                             ),
+                    ),
+            )
+            .child(
+                h_stack()
+                    .items_center()
+                    .justify_between()
+                    .h(px(22.0))
+                    .px(rems(0.5))
+                    .bg(theme.surface_secondary())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.fg_muted())
+                            .child(status_message.unwrap_or_default()),
+                    )
+                    .child(
+                        div()
+                            .id("sync-button")
+                            .text_xs()
+                            .text_color(theme.fg_muted())
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(theme.fg()))
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.sync_library(cx);
+                            }))
+                            .child("Sync"),
                     ),
             )
     }

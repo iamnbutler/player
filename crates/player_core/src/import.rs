@@ -3,7 +3,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use id3::TagLike;
+use id3::{Tag, TagLike};
 use rodio::{Decoder, Source};
 
 use crate::audio::{AudioFile, AudioFormat};
@@ -143,10 +143,21 @@ impl MetadataReader for Mp3MetadataReader {
             album_artist: tag.album_artist().map(String::from),
             album: tag.album().map(String::from),
             track_number: tag.track(),
-            duration: get_audio_duration(&file.path).or_else(|| {
-                tag.duration()
-                    .map(|millis| Duration::from_millis(millis as u64))
-            }),
+            duration: get_audio_duration(&file.path)
+                .or_else(|| {
+                    tag.duration()
+                        .map(|millis| Duration::from_millis(millis as u64))
+                })
+                .or_else(|| {
+                    let duration = calculate_duration_by_decoding(&file.path)?;
+                    if write_duration_to_file(&file.path, duration).is_ok() {
+                        eprintln!(
+                            "Wrote calculated duration {:?} to {:?}",
+                            duration, file.path
+                        );
+                    }
+                    Some(duration)
+                }),
             chapters: Vec::new(),
         })
     }
@@ -157,6 +168,32 @@ fn get_audio_duration(path: &Path) -> Option<Duration> {
     let reader = BufReader::new(file);
     let decoder = Decoder::new(reader).ok()?;
     decoder.total_duration()
+}
+
+fn calculate_duration_by_decoding(path: &Path) -> Option<Duration> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let decoder = Decoder::new(reader).ok()?;
+
+    let sample_rate = decoder.sample_rate();
+    let channels = decoder.channels() as u64;
+
+    if sample_rate == 0 || channels == 0 {
+        return None;
+    }
+
+    let total_samples: u64 = decoder.count() as u64;
+    let duration_secs = total_samples as f64 / (sample_rate as f64 * channels as f64);
+
+    Some(Duration::from_secs_f64(duration_secs))
+}
+
+fn write_duration_to_file(path: &Path, duration: Duration) -> Result<(), ImportError> {
+    let mut tag = Tag::read_from_path(path).unwrap_or_else(|_| Tag::new());
+    let millis = duration.as_millis() as u32;
+    tag.set_duration(millis);
+    tag.write_to_path(path, id3::Version::Id3v24)?;
+    Ok(())
 }
 
 // ============================================================================
@@ -419,4 +456,95 @@ fn cleanup_empty_directories(path: &Path) {
     // Then try to remove this directory if it's empty
     // (This will fail silently if the directory is not empty, which is fine)
     let _ = fs::remove_dir(path);
+}
+
+#[derive(Debug)]
+pub struct RepairResult {
+    pub path: PathBuf,
+    pub duration: Duration,
+    pub moved_to: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct RepairFailure {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+/// Attempt to repair files in the Problem folder by calculating duration and writing it to ID3.
+/// Successfully repaired files are moved back to the Import folder.
+pub fn repair_problem_files() -> (Vec<RepairResult>, Vec<RepairFailure>) {
+    let problem_dir = problem_path();
+    let mut successes = Vec::new();
+    let mut failures = Vec::new();
+
+    if !problem_dir.exists() {
+        return (successes, failures);
+    }
+
+    let files = match scan_directory(&problem_dir) {
+        Ok(files) => files,
+        Err(e) => {
+            failures.push(RepairFailure {
+                path: problem_dir,
+                reason: format!("Failed to scan directory: {}", e),
+            });
+            return (successes, failures);
+        }
+    };
+
+    for file in files {
+        let path = &file.file.path;
+
+        let duration = match calculate_duration_by_decoding(path) {
+            Some(d) => d,
+            None => {
+                failures.push(RepairFailure {
+                    path: path.clone(),
+                    reason: "Could not calculate duration by decoding".to_string(),
+                });
+                continue;
+            }
+        };
+
+        if let Err(e) = write_duration_to_file(path, duration) {
+            failures.push(RepairFailure {
+                path: path.clone(),
+                reason: format!("Failed to write duration to file: {}", e),
+            });
+            continue;
+        }
+
+        let relative = path.strip_prefix(&problem_dir).unwrap_or(path);
+        let import_dest = import_path().join(relative);
+
+        if let Some(parent) = import_dest.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                failures.push(RepairFailure {
+                    path: path.clone(),
+                    reason: format!("Failed to create import directory: {}", e),
+                });
+                continue;
+            }
+        }
+
+        if let Err(e) = fs::rename(path, &import_dest) {
+            failures.push(RepairFailure {
+                path: path.clone(),
+                reason: format!("Failed to move to Import: {}", e),
+            });
+            continue;
+        }
+
+        eprintln!("Repaired {:?} with duration {:?}", import_dest, duration);
+        successes.push(RepairResult {
+            path: path.clone(),
+            duration,
+            moved_to: import_dest,
+        });
+    }
+
+    cleanup_empty_directories(&problem_dir);
+
+    (successes, failures)
 }
