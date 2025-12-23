@@ -1,12 +1,44 @@
 use std::ops::Range;
 
 use gpui::{
-    div, prelude::*, px, rems, uniform_list, App, Context, Entity, EventEmitter, IntoElement,
-    Render, SharedString, UniformListScrollHandle, Window,
+    actions, div, prelude::*, px, rems, uniform_list, App, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, IntoElement, KeyBinding, Render, ScrollStrategy, SharedString,
+    UniformListScrollHandle, Window,
 };
 use gpuikit::layout::{h_stack, v_stack};
 use gpuikit_theme::{ActiveTheme, Themeable};
 use player_core::{Library, Song, SongId, SortOrder};
+
+actions!(
+    list_view,
+    [
+        SelectNext,
+        SelectPrevious,
+        SelectFirst,
+        SelectLast,
+        PageDown,
+        PageUp,
+        PlaySelected,
+        TogglePlayback,
+    ]
+);
+
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("down", SelectNext, Some("ListView")),
+        KeyBinding::new("up", SelectPrevious, Some("ListView")),
+        KeyBinding::new("j", SelectNext, Some("ListView")),
+        KeyBinding::new("k", SelectPrevious, Some("ListView")),
+        KeyBinding::new("home", SelectFirst, Some("ListView")),
+        KeyBinding::new("end", SelectLast, Some("ListView")),
+        KeyBinding::new("cmd-up", SelectFirst, Some("ListView")),
+        KeyBinding::new("cmd-down", SelectLast, Some("ListView")),
+        KeyBinding::new("pagedown", PageDown, Some("ListView")),
+        KeyBinding::new("pageup", PageUp, Some("ListView")),
+        KeyBinding::new("enter", PlaySelected, Some("ListView")),
+        KeyBinding::new("space", TogglePlayback, Some("ListView")),
+    ]);
+}
 
 pub struct ListView {
     library: Entity<Library>,
@@ -14,23 +46,33 @@ pub struct ListView {
     sort_order: SortOrder,
     playing_song_id: Option<SongId>,
     selected_index: Option<usize>,
+    focus_handle: FocusHandle,
 }
 
 pub enum ListViewEvent {
     SongSelected(Song),
     SongDoubleClicked(Song),
+    PlaySelected(Song),
+    TogglePlayback,
 }
 
 impl EventEmitter<ListViewEvent> for ListView {}
 
+impl Focusable for ListView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl ListView {
-    pub fn new(library: Entity<Library>, _cx: &mut Context<Self>) -> Self {
+    pub fn new(library: Entity<Library>, cx: &mut Context<Self>) -> Self {
         Self {
             library,
             scroll_handle: UniformListScrollHandle::new(),
             sort_order: SortOrder::default(),
             playing_song_id: None,
             selected_index: None,
+            focus_handle: cx.focus_handle(),
         }
     }
 
@@ -52,6 +94,134 @@ impl ListView {
         let current_index = songs.iter().position(|s| s.id == playing_id)?;
         songs.get(current_index + 1).cloned()
     }
+
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window);
+        cx.notify();
+    }
+
+    fn song_count(&self, cx: &App) -> usize {
+        self.library.read(cx).list(self.sort_order).len()
+    }
+
+    fn get_song_at_index(&self, index: usize, cx: &App) -> Option<Song> {
+        let library = self.library.read(cx);
+        let songs: Vec<Song> = library.list(self.sort_order);
+        songs.get(index).cloned()
+    }
+
+    fn selected_song(&self, cx: &App) -> Option<Song> {
+        let index = self.selected_index?;
+        self.get_song_at_index(index, cx)
+    }
+
+    fn select_next(&mut self, _: &SelectNext, _window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.song_count(cx);
+        if count == 0 {
+            return;
+        }
+
+        let new_index = match self.selected_index {
+            Some(index) => (index + 1).min(count.saturating_sub(1)),
+            None => 0,
+        };
+
+        self.select_index(new_index, cx);
+    }
+
+    fn select_previous(
+        &mut self,
+        _: &SelectPrevious,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.song_count(cx);
+        if count == 0 {
+            return;
+        }
+
+        let new_index = match self.selected_index {
+            Some(index) => index.saturating_sub(1),
+            None => 0,
+        };
+
+        self.select_index(new_index, cx);
+    }
+
+    fn select_first(&mut self, _: &SelectFirst, _window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.song_count(cx);
+        if count == 0 {
+            return;
+        }
+
+        self.select_index(0, cx);
+    }
+
+    fn select_last(&mut self, _: &SelectLast, _window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.song_count(cx);
+        if count == 0 {
+            return;
+        }
+
+        self.select_index(count.saturating_sub(1), cx);
+    }
+
+    fn page_down(&mut self, _: &PageDown, _window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.song_count(cx);
+        if count == 0 {
+            return;
+        }
+
+        let page_size = 20;
+        let new_index = match self.selected_index {
+            Some(index) => (index + page_size).min(count.saturating_sub(1)),
+            None => page_size.min(count.saturating_sub(1)),
+        };
+
+        self.select_index(new_index, cx);
+    }
+
+    fn page_up(&mut self, _: &PageUp, _window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.song_count(cx);
+        if count == 0 {
+            return;
+        }
+
+        let page_size = 20;
+        let new_index = match self.selected_index {
+            Some(index) => index.saturating_sub(page_size),
+            None => 0,
+        };
+
+        self.select_index(new_index, cx);
+    }
+
+    fn play_selected(&mut self, _: &PlaySelected, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(song) = self.selected_song(cx) {
+            cx.emit(ListViewEvent::PlaySelected(song));
+        }
+    }
+
+    fn toggle_playback(
+        &mut self,
+        _: &TogglePlayback,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(ListViewEvent::TogglePlayback);
+    }
+
+    fn select_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.selected_index = Some(index);
+        self.scroll_handle
+            .scroll_to_item(index, ScrollStrategy::Center);
+
+        if let Some(song) = self.get_song_at_index(index, cx) {
+            cx.emit(ListViewEvent::SongSelected(song));
+        }
+
+        cx.notify();
+    }
 }
 
 impl Render for ListView {
@@ -67,6 +237,17 @@ impl Render for ListView {
         let header_text_color = theme.fg_muted();
 
         v_stack()
+            .key_context("ListView")
+            .id("list-view")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::select_next))
+            .on_action(cx.listener(Self::select_previous))
+            .on_action(cx.listener(Self::select_first))
+            .on_action(cx.listener(Self::select_last))
+            .on_action(cx.listener(Self::page_down))
+            .on_action(cx.listener(Self::page_up))
+            .on_action(cx.listener(Self::play_selected))
+            .on_action(cx.listener(Self::toggle_playback))
             .size_full()
             .child(
                 h_stack()
@@ -218,8 +399,9 @@ impl Render for ListView {
                                                     .child(album),
                                             )
                                             .on_click(cx.listener(
-                                                move |this, event: &gpui::ClickEvent, _window, cx| {
+                                                move |this, event: &gpui::ClickEvent, window, cx| {
                                                     this.selected_index = Some(ix);
+                                                    this.focus_handle.focus(window);
 
                                                     if event.click_count() >= 2 {
                                                         cx.emit(ListViewEvent::SongDoubleClicked(

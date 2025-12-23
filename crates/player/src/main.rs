@@ -62,8 +62,11 @@ impl Player {
     ) {
         match event {
             ListViewEvent::SongSelected(_song) => {}
-            ListViewEvent::SongDoubleClicked(song) => {
+            ListViewEvent::SongDoubleClicked(song) | ListViewEvent::PlaySelected(song) => {
                 self.play_song(song.clone(), cx);
+            }
+            ListViewEvent::TogglePlayback => {
+                self.toggle_playback(cx);
             }
         }
     }
@@ -536,6 +539,7 @@ fn main() {
         .with_assets(gpuikit::assets())
         .run(|cx: &mut App| {
             gpuikit::init(cx);
+            ui::init(cx);
             cx.open_window(WindowOptions::default(), |_window, cx| cx.new(Player::new))
                 .unwrap();
 

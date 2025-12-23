@@ -1,3 +1,3 @@
 mod ui;
 
-pub use ui::{ListView, ListViewEvent};
+pub use ui::{init, ListView, ListViewEvent};
