@@ -160,6 +160,28 @@ impl AudioPlayer {
         cx.notify();
     }
 
+    pub fn seek_to(&mut self, position: Duration, cx: &mut Context<Self>) {
+        if let Some(sink) = &self.sink {
+            if sink.try_seek(position).is_ok() {
+                self.paused_position = position;
+                if self.state == PlaybackState::Playing {
+                    self.playback_started_at = Some(Instant::now());
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    pub fn seek_by(&mut self, delta: Duration, forward: bool, cx: &mut Context<Self>) {
+        let current_position = self.position();
+        let new_position = if forward {
+            current_position.saturating_add(delta)
+        } else {
+            current_position.saturating_sub(delta)
+        };
+        self.seek_to(new_position, cx);
+    }
+
     pub fn is_finished(&self) -> bool {
         self.sink.as_ref().is_some_and(|s| s.empty())
     }

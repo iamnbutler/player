@@ -311,11 +311,20 @@ impl Player {
                         player.stop(cx);
                     });
                 }
-                MediaKeyEvent::SeekForward | MediaKeyEvent::SeekBackward => {
-                    // TODO: Implement seeking
+                MediaKeyEvent::SeekForward => {
+                    self.audio_player.update(cx, |player, cx| {
+                        player.seek_by(Duration::from_secs(10), true, cx);
+                    });
                 }
-                MediaKeyEvent::SetPosition(_position) => {
-                    // TODO: Implement seek to position
+                MediaKeyEvent::SeekBackward => {
+                    self.audio_player.update(cx, |player, cx| {
+                        player.seek_by(Duration::from_secs(10), false, cx);
+                    });
+                }
+                MediaKeyEvent::SetPosition(position) => {
+                    self.audio_player.update(cx, |player, cx| {
+                        player.seek_to(position, cx);
+                    });
                 }
             }
         }
