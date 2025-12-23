@@ -11,7 +11,7 @@ use gpuikit_theme::{ActiveTheme, Themeable};
 use player_core::{
     ensure_directories, import_all_pending, problem_path, repair_problem_files_with_progress,
     save_library, AudioPlayer, AudioPlayerEvent, Library, LibraryReader, LoadedEntry,
-    PlaybackState, RepairProgress, Song,
+    MediaControlsHandler, MediaKeyEvent, PlaybackState, RepairProgress, Song,
 };
 use std::time::Duration;
 use ui::{ListView, ListViewEvent};
@@ -54,6 +54,7 @@ struct Player {
     sync_task: Option<Task<()>>,
     shuffle: bool,
     repeat: RepeatMode,
+    media_controls: Option<MediaControlsHandler>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -83,6 +84,14 @@ impl Player {
             cx.subscribe(&audio_player, Self::handle_audio_player_event),
         ];
 
+        let media_controls = match MediaControlsHandler::new() {
+            Ok(controls) => Some(controls),
+            Err(e) => {
+                eprintln!("Failed to initialize media controls: {}", e);
+                None
+            }
+        };
+
         Player {
             library,
             list_view,
@@ -93,6 +102,7 @@ impl Player {
             sync_task: None,
             shuffle: false,
             repeat: RepeatMode::Off,
+            media_controls,
             _subscriptions: subscriptions,
         }
     }
@@ -161,7 +171,8 @@ impl Player {
         cx: &mut Context<Self>,
     ) {
         match event {
-            AudioPlayerEvent::StateChanged(_state) => {
+            AudioPlayerEvent::StateChanged(state) => {
+                self.update_media_controls_playback(*state, cx);
                 cx.notify();
             }
             AudioPlayerEvent::SongChanged(song) => {
@@ -169,6 +180,7 @@ impl Player {
                 self.list_view.update(cx, |list_view, cx| {
                     list_view.set_playing_song(song_id, cx);
                 });
+                self.update_media_controls_metadata(song.as_ref());
                 cx.notify();
             }
             AudioPlayerEvent::PlaybackFinished => {
@@ -264,6 +276,80 @@ impl Player {
             RepeatMode::One => RepeatMode::Off,
         };
         cx.notify();
+    }
+
+    fn poll_media_key_events(&mut self, cx: &mut Context<Self>) {
+        let events: Vec<MediaKeyEvent> = self
+            .media_controls
+            .as_ref()
+            .map(|c| c.poll_events())
+            .unwrap_or_default();
+
+        for event in events {
+            match event {
+                MediaKeyEvent::Play => {
+                    self.audio_player.update(cx, |player, cx| {
+                        player.play(cx);
+                    });
+                }
+                MediaKeyEvent::Pause => {
+                    self.audio_player.update(cx, |player, cx| {
+                        player.pause(cx);
+                    });
+                }
+                MediaKeyEvent::Toggle => {
+                    self.toggle_playback(cx);
+                }
+                MediaKeyEvent::Next => {
+                    self.skip_next(cx);
+                }
+                MediaKeyEvent::Previous => {
+                    self.skip_previous(cx);
+                }
+                MediaKeyEvent::Stop => {
+                    self.audio_player.update(cx, |player, cx| {
+                        player.stop(cx);
+                    });
+                }
+                MediaKeyEvent::SeekForward | MediaKeyEvent::SeekBackward => {
+                    // TODO: Implement seeking
+                }
+                MediaKeyEvent::SetPosition(_position) => {
+                    // TODO: Implement seek to position
+                }
+            }
+        }
+    }
+
+    fn update_media_controls_metadata(&mut self, song: Option<&Song>) {
+        if let Some(controls) = &mut self.media_controls {
+            if let Some(song) = song {
+                if let Err(e) = controls.set_metadata(
+                    Some(&song.title),
+                    song.artist.as_deref(),
+                    song.album.as_deref(),
+                    Some(song.duration),
+                ) {
+                    eprintln!("Failed to update media controls metadata: {}", e);
+                }
+            } else if let Err(e) = controls.clear() {
+                eprintln!("Failed to clear media controls: {}", e);
+            }
+        }
+    }
+
+    fn update_media_controls_playback(&mut self, state: PlaybackState, cx: &mut Context<Self>) {
+        if let Some(controls) = &mut self.media_controls {
+            let position = self.audio_player.read(cx).position();
+            let result = match state {
+                PlaybackState::Playing => controls.set_playback_playing(Some(position)),
+                PlaybackState::Paused => controls.set_playback_paused(Some(position)),
+                PlaybackState::Stopped => controls.set_playback_stopped(),
+            };
+            if let Err(e) = result {
+                eprintln!("Failed to update media controls playback: {}", e);
+            }
+        }
     }
 
     fn stream_load_library(library: Entity<Library>, cx: &mut Context<Self>) {
@@ -540,6 +626,8 @@ impl Render for Player {
         self.audio_player.update(cx, |player, cx| {
             player.check_and_handle_finished(cx);
         });
+
+        self.poll_media_key_events(cx);
 
         let theme = cx.theme();
         let audio_player = self.audio_player.read(cx);
