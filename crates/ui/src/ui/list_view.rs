@@ -83,6 +83,17 @@ impl ListView {
 
     pub fn set_playing_song(&mut self, song_id: Option<SongId>, cx: &mut Context<Self>) {
         self.playing_song_id = song_id;
+
+        if let Some(song_id) = song_id {
+            let library = self.library.read(cx);
+            let songs: Vec<Song> = library.list(self.sort_order);
+            if let Some(index) = songs.iter().position(|s| s.id == song_id) {
+                self.selected_index = Some(index);
+                self.scroll_handle
+                    .scroll_to_item(index, ScrollStrategy::Center);
+            }
+        }
+
         cx.notify();
     }
 
@@ -93,6 +104,51 @@ impl ListView {
 
         let current_index = songs.iter().position(|s| s.id == playing_id)?;
         songs.get(current_index + 1).cloned()
+    }
+
+    pub fn first_song(&self, cx: &App) -> Option<Song> {
+        let library = self.library.read(cx);
+        let songs: Vec<Song> = library.list(self.sort_order);
+        songs.first().cloned()
+    }
+
+    pub fn random_song(&self, cx: &App) -> Option<Song> {
+        let library = self.library.read(cx);
+        let songs: Vec<Song> = library.list(self.sort_order);
+
+        if songs.is_empty() {
+            return None;
+        }
+
+        let candidates: Vec<&Song> = if let Some(playing_id) = self.playing_song_id {
+            songs.iter().filter(|s| s.id != playing_id).collect()
+        } else {
+            songs.iter().collect()
+        };
+
+        if candidates.is_empty() {
+            return songs.first().cloned();
+        }
+
+        let index = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as usize % candidates.len())
+            .unwrap_or(0);
+
+        candidates.get(index).map(|s| (*s).clone())
+    }
+
+    pub fn previous_song(&self, cx: &App) -> Option<Song> {
+        let playing_id = self.playing_song_id?;
+        let library = self.library.read(cx);
+        let songs: Vec<Song> = library.list(self.sort_order);
+
+        let current_index = songs.iter().position(|s| s.id == playing_id)?;
+        if current_index > 0 {
+            songs.get(current_index - 1).cloned()
+        } else {
+            None
+        }
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {

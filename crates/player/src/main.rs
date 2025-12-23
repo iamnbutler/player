@@ -1,6 +1,9 @@
 use futures::FutureExt;
 use gpui::prelude::*;
-use gpui::*;
+use gpui::{
+    actions, canvas, div, px, rems, App, Application, Bounds, Context, Entity, FocusHandle,
+    Focusable, KeyBinding, Render, Subscription, Task, Window, WindowOptions,
+};
 use gpuikit::elements::icon_button::icon_button;
 use gpuikit::layout::{h_stack, v_stack};
 use gpuikit::DefaultIcons;
@@ -13,14 +16,51 @@ use player_core::{
 use std::time::Duration;
 use ui::{ListView, ListViewEvent};
 
+actions!(
+    player,
+    [
+        TogglePlayback,
+        SkipNext,
+        SkipPrevious,
+        ToggleShuffle,
+        ToggleRepeat,
+    ]
+);
+
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("space", TogglePlayback, None),
+        KeyBinding::new("cmd-right", SkipNext, None),
+        KeyBinding::new("cmd-left", SkipPrevious, None),
+        KeyBinding::new("cmd-s", ToggleShuffle, None),
+        KeyBinding::new("cmd-r", ToggleRepeat, None),
+    ]);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepeatMode {
+    Off,
+    All,
+    One,
+}
+
 struct Player {
     library: Entity<Library>,
     list_view: Entity<ListView>,
     audio_player: Entity<AudioPlayer>,
+    focus_handle: FocusHandle,
     status_message: Option<String>,
     is_syncing: bool,
     sync_task: Option<Task<()>>,
+    shuffle: bool,
+    repeat: RepeatMode,
     _subscriptions: Vec<Subscription>,
+}
+
+impl Focusable for Player {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
 }
 
 impl Player {
@@ -47,11 +87,54 @@ impl Player {
             library,
             list_view,
             audio_player,
+            focus_handle: cx.focus_handle(),
             status_message: None,
             is_syncing: false,
             sync_task: None,
+            shuffle: false,
+            repeat: RepeatMode::Off,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn action_toggle_playback(
+        &mut self,
+        _: &TogglePlayback,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_playback(cx);
+    }
+
+    fn action_skip_next(&mut self, _: &SkipNext, _window: &mut Window, cx: &mut Context<Self>) {
+        self.skip_next(cx);
+    }
+
+    fn action_skip_previous(
+        &mut self,
+        _: &SkipPrevious,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.skip_previous(cx);
+    }
+
+    fn action_toggle_shuffle(
+        &mut self,
+        _: &ToggleShuffle,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_shuffle(cx);
+    }
+
+    fn action_toggle_repeat(
+        &mut self,
+        _: &ToggleRepeat,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_repeat(cx);
     }
 
     fn handle_list_view_event(
@@ -89,9 +172,37 @@ impl Player {
                 cx.notify();
             }
             AudioPlayerEvent::PlaybackFinished => {
-                let next_song = self.list_view.read(cx).next_song(cx);
-                if let Some(song) = next_song {
-                    self.play_song(song, cx);
+                match self.repeat {
+                    RepeatMode::One => {
+                        if let Some(song) = self.audio_player.read(cx).current_song().cloned() {
+                            self.play_song(song, cx);
+                        }
+                    }
+                    RepeatMode::All => {
+                        let next_song = if self.shuffle {
+                            self.list_view.read(cx).random_song(cx)
+                        } else {
+                            self.list_view.read(cx).next_song(cx)
+                        };
+                        if let Some(song) = next_song {
+                            self.play_song(song, cx);
+                        } else if !self.shuffle {
+                            let first_song = self.list_view.read(cx).first_song(cx);
+                            if let Some(song) = first_song {
+                                self.play_song(song, cx);
+                            }
+                        }
+                    }
+                    RepeatMode::Off => {
+                        let next_song = if self.shuffle {
+                            self.list_view.read(cx).random_song(cx)
+                        } else {
+                            self.list_view.read(cx).next_song(cx)
+                        };
+                        if let Some(song) = next_song {
+                            self.play_song(song, cx);
+                        }
+                    }
                 }
                 cx.notify();
             }
@@ -110,6 +221,49 @@ impl Player {
         self.audio_player.update(cx, |player, cx| {
             player.toggle_playback(cx);
         });
+    }
+
+    fn skip_next(&mut self, cx: &mut Context<Self>) {
+        let next_song = if self.shuffle {
+            self.list_view.read(cx).random_song(cx)
+        } else {
+            self.list_view.read(cx).next_song(cx)
+        };
+        if let Some(song) = next_song {
+            self.play_song(song, cx);
+        }
+    }
+
+    fn skip_previous(&mut self, cx: &mut Context<Self>) {
+        let position = self.audio_player.read(cx).position();
+        if position > Duration::from_secs(3) {
+            if let Some(song) = self.audio_player.read(cx).current_song().cloned() {
+                self.play_song(song, cx);
+            }
+        } else {
+            let prev_song = if self.shuffle {
+                self.list_view.read(cx).random_song(cx)
+            } else {
+                self.list_view.read(cx).previous_song(cx)
+            };
+            if let Some(song) = prev_song {
+                self.play_song(song, cx);
+            }
+        }
+    }
+
+    fn toggle_shuffle(&mut self, cx: &mut Context<Self>) {
+        self.shuffle = !self.shuffle;
+        cx.notify();
+    }
+
+    fn toggle_repeat(&mut self, cx: &mut Context<Self>) {
+        self.repeat = match self.repeat {
+            RepeatMode::Off => RepeatMode::All,
+            RepeatMode::All => RepeatMode::One,
+            RepeatMode::One => RepeatMode::Off,
+        };
+        cx.notify();
     }
 
     fn stream_load_library(library: Entity<Library>, cx: &mut Context<Self>) {
@@ -402,6 +556,14 @@ impl Render for Player {
         let status_message = self.status_message.clone();
 
         v_stack()
+            .id("player")
+            .key_context("Player")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::action_toggle_playback))
+            .on_action(cx.listener(Self::action_skip_next))
+            .on_action(cx.listener(Self::action_skip_previous))
+            .on_action(cx.listener(Self::action_toggle_shuffle))
+            .on_action(cx.listener(Self::action_toggle_repeat))
             .bg(theme.bg())
             .size_full()
             .child(
@@ -419,23 +581,8 @@ impl Render for Player {
                     .child(
                         h_stack()
                             .items_center()
-                            .gap(rems(0.5))
-                            .child(
-                                icon_button(
-                                    "play-pause",
-                                    match playback_state {
-                                        PlaybackState::Playing => DefaultIcons::pause(),
-                                        PlaybackState::Paused | PlaybackState::Stopped => {
-                                            DefaultIcons::play()
-                                        }
-                                    },
-                                )
-                                .on_click(cx.listener(
-                                    |this, _event, _window, cx| {
-                                        this.toggle_playback(cx);
-                                    },
-                                )),
-                            )
+                            .justify_between()
+                            .w_full()
                             .child(v_stack().flex_1().gap(rems(0.125)).map(|this| {
                                 if let Some(song) = &current_song {
                                     this.child(
@@ -459,7 +606,75 @@ impl Render for Player {
                                             .child("No track playing"),
                                     )
                                 }
-                            })),
+                            }))
+                            .child(
+                                h_stack()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(rems(0.5))
+                                    .child(
+                                        icon_button(
+                                            "skip-previous",
+                                            DefaultIcons::track_previous(),
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.skip_previous(cx);
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        icon_button(
+                                            "play-pause",
+                                            match playback_state {
+                                                PlaybackState::Playing => DefaultIcons::pause(),
+                                                PlaybackState::Paused | PlaybackState::Stopped => {
+                                                    DefaultIcons::play()
+                                                }
+                                            },
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.toggle_playback(cx);
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        icon_button("skip-next", DefaultIcons::track_next())
+                                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                                this.skip_next(cx);
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                h_stack()
+                                    .flex_1()
+                                    .items_center()
+                                    .justify_end()
+                                    .gap(rems(0.5))
+                                    .child(
+                                        icon_button("shuffle", DefaultIcons::shuffle())
+                                            .selected(self.shuffle)
+                                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                                this.toggle_shuffle(cx);
+                                            })),
+                                    )
+                                    .child(
+                                        icon_button(
+                                            "repeat",
+                                            match self.repeat {
+                                                RepeatMode::One => DefaultIcons::loop_(),
+                                                _ => DefaultIcons::loop_(),
+                                            },
+                                        )
+                                        .selected(self.repeat != RepeatMode::Off)
+                                        .on_click(
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.toggle_repeat(cx);
+                                            }),
+                                        ),
+                                    ),
+                            ),
                     )
                     .child(
                         h_stack()
@@ -540,8 +755,13 @@ fn main() {
         .run(|cx: &mut App| {
             gpuikit::init(cx);
             ui::init(cx);
-            cx.open_window(WindowOptions::default(), |_window, cx| cx.new(Player::new))
-                .unwrap();
+            init(cx);
+            cx.open_window(WindowOptions::default(), |window, cx| {
+                let player = cx.new(Player::new);
+                window.focus(&player.read(cx).focus_handle);
+                player
+            })
+            .unwrap();
 
             cx.activate(true);
         });
