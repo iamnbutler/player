@@ -13,7 +13,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 souvlaki = "0.8"
 
-gpui = "0.2.2"
+gpui.workspace = true
 
 [dev-dependencies]
 tempfile = "3.23.0"

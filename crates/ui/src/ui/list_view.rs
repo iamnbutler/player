@@ -6,7 +6,7 @@ use gpui::{
     UniformListScrollHandle, Window,
 };
 use gpuikit::layout::{h_stack, v_stack};
-use gpuikit_theme::{ActiveTheme, Themeable};
+use gpuikit::theme::{ActiveTheme, Themeable};
 use player_core::{Library, Song, SongId, SortOrder};
 
 actions!(
@@ -478,7 +478,7 @@ impl Render for ListView {
                             items
                         }),
                     )
-                    .track_scroll(self.scroll_handle.clone())
+                    .track_scroll(&self.scroll_handle)
                     .size_full(),
                 ),
             )

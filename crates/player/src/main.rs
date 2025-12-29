@@ -7,7 +7,7 @@ use gpui::{
 use gpuikit::elements::icon_button::icon_button;
 use gpuikit::layout::{h_stack, v_stack};
 use gpuikit::DefaultIcons;
-use gpuikit_theme::{ActiveTheme, Themeable};
+use gpuikit::theme::{ActiveTheme, Themeable};
 use player_core::{
     ensure_directories, import_all_pending, problem_path, repair_problem_files_with_progress,
     save_library, AudioPlayer, AudioPlayerEvent, Library, LibraryReader, LoadedEntry,
